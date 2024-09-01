@@ -1,17 +1,63 @@
-import React from 'react';
-import ReactDOM from 'react-dom';
-import './index.css';
-import App from './App';
-import reportWebVitals from './reportWebVitals';
+import cors from 'cors'
+import dotenv from 'dotenv'
+import express from 'express'
+import { KJUR } from 'jsrsasign'
+import { inNumberArray, isBetween, isRequiredAllOrNone, validateRequest } from './validations.js'
 
-ReactDOM.render(
-  <React.StrictMode>
-    <App />
-  </React.StrictMode>,
-  document.getElementById('root')
-);
+dotenv.config()
+const app = express()
+const port = process.env.PORT || 4000
 
-// If you want to start measuring performance in your app, pass a function
-// to log results (for example: reportWebVitals(console.log))
-// or send to an analytics endpoint. Learn more: https://bit.ly/CRA-vitals
-reportWebVitals();
+app.use(express.json(), cors())
+app.options('*', cors())
+
+const propValidations = {
+  role: inNumberArray([0, 1]),
+  expirationSeconds: isBetween(1800, 172800)
+}
+
+const schemaValidations = [isRequiredAllOrNone(['meetingNumber', 'role'])]
+
+const coerceRequestBody = (body) => ({
+  ...body,
+  ...['role', 'expirationSeconds'].reduce(
+    (acc, cur) => ({ ...acc, [cur]: typeof body[cur] === 'string' ? parseInt(body[cur]) : body[cur] }),
+    {}
+  )
+})
+
+app.post('/', (req, res) => {
+  const requestBody = coerceRequestBody(req.body)
+  const validationErrors = validateRequest(requestBody, propValidations, schemaValidations)
+
+  if (validationErrors.length > 0) {
+    return res.status(400).json({ errors: validationErrors })
+  }
+
+  const { meetingNumber, role, expirationSeconds } = requestBody
+  const iat = Math.floor(Date.now() / 1000)
+  const exp = expirationSeconds ? iat + expirationSeconds : iat + 60 * 60 * 2
+  const oHeader = { alg: 'HS256', typ: 'JWT' }
+
+  const oPayload = {
+    appKey: process.env.ZOOM_MEETING_SDK_KEY,
+    sdkKey: process.env.ZOOM_MEETING_SDK_KEY,
+    mn: meetingNumber,
+    role,
+    iat,
+    exp,
+    tokenExp: exp
+  }
+
+  const sHeader = JSON.stringify(oHeader)
+  const sPayload = JSON.stringify(oPayload)
+  console.log('Before sdkJWT')
+  console.log('Generating JWT with secret:', process.env.ZOOM_MEETING_SDK_SECRET)
+  const sdkJWT = KJUR.jws.JWS.sign('HS256', sHeader, sPayload, process.env.ZOOM_MEETING_SDK_SECRET)
+  console.log('Generated JWT:', sdkJWT)
+  // const sdkJWT = KJUR.jws.JWS.sign('HS256', sHeader, sPayload, process.env.ZOOM_MEETING_SDK_SECRET)
+  // console.log('after sdkJWT')
+  return res.json({ signature: sdkJWT })
+})
+
+app.listen(port, () => console.log(`Zoom Meeting SDK Auth Endpoint Sample Node.js, listening on port ${port}!`))
